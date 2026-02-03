@@ -3,11 +3,11 @@ import "server-only";
 /**
  * Fetch quotes by author name using a public quote API.
  *
- * We intentionally DO NOT scrape random websites.
+ * Provider: Quotable (https://api.quotable.io)
  *
- * Current provider: Quotable (https://api.quotable.io)
- * - Limitation: author name matching and attribution accuracy depend on the provider's dataset.
- * - Future improvement: support multiple providers + per-personality aliasing/fallbacks.
+ * IMPORTANT:
+ * - We explicitly disable Next.js fetch caching (`cache: "no-store"`)
+ * - Determinism is handled at the quote-selection layer, not here
  */
 
 type CacheEntry = Readonly<{
@@ -15,16 +15,16 @@ type CacheEntry = Readonly<{
   quotes: ReadonlyArray<string>;
 }>;
 
-// In-memory cache (best-effort). In serverless/edge environments this may not persist
-// across cold starts, so treat it as an optimization, not a guarantee.
+// Best-effort in-memory cache (may reset on cold starts)
 const memCache: Map<string, CacheEntry> = new Map();
 
 export async function fetchQuotesByAuthor(authorName: string): Promise<string[]> {
   const key = authorName.trim().toLowerCase();
 
-  // Basic cache: keep results for 24 hours.
+  // Keep results for 24 hours in memory
   const ttlMs = 24 * 60 * 60 * 1000;
   const now = Date.now();
+
   const cached = memCache.get(key);
   if (cached && now - cached.fetchedAtMs < ttlMs) {
     return [...cached.quotes];
@@ -36,35 +36,38 @@ export async function fetchQuotesByAuthor(authorName: string): Promise<string[]>
     url.searchParams.set("limit", "50");
 
     const res = await fetch(url.toString(), {
-      // Next.js fetch cache hint: cache for 24h (best-effort, platform-dependent).
-      // This keeps it server-only and avoids client-side fetching.
-      next: { revalidate: 24 * 60 * 60 },
+      // 🔥 CRITICAL FIX:
+      // Disable Next.js fetch cache completely
+      cache: "no-store",
     });
 
     if (!res.ok) {
-      // Graceful failure: return empty list. Caller decides how to handle "no quotes".
       return [];
     }
 
     const data: unknown = await res.json();
     const quotes = parseQuotableQuotesResponse(data);
 
-    memCache.set(key, { fetchedAtMs: now, quotes });
+    memCache.set(key, {
+      fetchedAtMs: now,
+      quotes,
+    });
+
     return [...quotes];
-  } catch {
-    // Network / JSON parsing errors: fail gracefully.
+  } catch (err) {
+    console.error("[fetchQuotesByAuthor] failed", err);
     return [];
   }
 }
 
 function parseQuotableQuotesResponse(input: unknown): string[] {
-  // Expected (simplified):
-  // { results: [{ content: string, author: string, ... }], ... }
   if (!isRecord(input)) return [];
+
   const results = input["results"];
   if (!Array.isArray(results)) return [];
 
   const out: string[] = [];
+
   for (const item of results) {
     if (!isRecord(item)) continue;
     const content = item["content"];
@@ -73,6 +76,7 @@ function parseQuotableQuotesResponse(input: unknown): string[] {
       if (q.length > 0) out.push(q);
     }
   }
+
   return dedupe(out);
 }
 
@@ -83,4 +87,3 @@ function dedupe(list: string[]): string[] {
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
-

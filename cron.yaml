@@ -1,0 +1,15 @@
+# Vercel Cron configuration
+#
+# Target: run once daily at 08:00 IST.
+# IST is UTC+05:30, so 08:00 IST == 02:30 UTC.
+#
+# Cron format is in UTC:  (minute hour day-of-month month day-of-week)
+# Therefore: "30 2 * * *" runs every day at 02:30 UTC.
+#
+# This cron calls your Route Handler at:
+#   GET /api/daily
+
+crons:
+  - path: /api/daily
+    schedule: "30 2 * * *"
+

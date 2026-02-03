@@ -4,62 +4,67 @@ import { fetchQuotesByAuthor } from "./fetchQuotes";
 import { PERSONALITIES, toAuthorId, type Personality } from "./personalities";
 
 export type DailyQuote = Readonly<{
-  /** UTC date in YYYY-MM-DD format (same for everyone) */
   date: string;
   person: Readonly<{
-    /** Stable id derived from the personality name (e.g., "steve-jobs") */
     id: string;
-    /** Display name (from `lib/personalities.ts`) */
     name: Personality;
   }>;
   quote: string;
 }>;
 
-/**
- * NOTE ON "LOW REPETITION" WITHOUT PERSISTENCE
- * --------------------------------------------
- * This selection is deterministic from the date only. That means:
- * - We cannot *guarantee* "no repeats across consecutive days" without saving state
- *   (e.g. in a DB, KV store, or even a local file) because the algorithm has no
- *   memory of what was shown yesterday.
- * - What we *can* do is distribute picks fairly across the available quotes, so
- *   the *probability* of repetition is low when you have a decent number of quotes.
- *   Roughly, if you have N total quotes, repeat probability from one day to the next
- *   is about 1/N (assuming uniform distribution).
- *
- * If you later want "never repeat until all quotes are used", you need persistence
- * (store a shuffled cycle index per day) or generate a deterministic permutation
- * keyed by a long-term secret + day number and then take the next item in sequence.
- */
+/* --------------------------------------------------
+   HARD FALLBACK (never fails)
+-------------------------------------------------- */
+const FALLBACK_PERSON: Personality = PERSONALITIES[0];
+
+const FALLBACK_QUOTE_TEXT =
+  "Consistency beats motivation. Show up every day, even when it’s hard.";
 
 /**
- * Returns today's quote (deterministic for the UTC date).
- * Same quote for everyone on the same day.
+ * Returns today's quote (deterministic per UTC date).
+ * NEVER throws. Safe for cron, KV, and UI.
  */
-export async function getTodaysQuote(now: Date = new Date()): Promise<DailyQuote> {
+export async function getTodaysQuote(
+  now: Date = new Date(),
+): Promise<DailyQuote> {
   const date = formatUtcDateYYYYMMDD(now);
   const seed = fnv1a32(`daily-quote:${date}`);
   const rng = mulberry32(seed);
 
-  const flat = await fetchAndFlattenQuotes();
-  if (flat.length === 0) {
-    // Graceful behavior: if the quote provider fails or returns no quotes,
-    // we surface a clear server-side error.
-    //
-    // Limitation: without local persistence, we can't guarantee availability.
-    // Future improvement: store a vetted fallback set in a DB/KV store.
-    throw new Error("No quotes available from the quote provider.");
+  try {
+    const flat = await fetchAndFlattenQuotes();
+
+    if (flat.length === 0) {
+      console.warn("[getTodaysQuote] No quotes fetched. Using fallback.");
+      return fallbackQuote(date);
+    }
+
+    const index = Math.floor(rng() * flat.length);
+    const picked = flat[index];
+
+    return {
+      date,
+      person: { id: picked.personId, name: picked.personName },
+      quote: picked.quote,
+    };
+  } catch (err) {
+    console.error("[getTodaysQuote] crashed, using fallback", err);
+    return fallbackQuote(date);
   }
+}
 
-  // Deterministic pseudo-random index derived from the date-based seed.
-  // `rng()` is in [0, 1), so this is stable for a given day.
-  const index = Math.floor(rng() * flat.length);
-  const picked = flat[index];
+/* --------------------------------------------------
+   Helpers
+-------------------------------------------------- */
 
+function fallbackQuote(date: string): DailyQuote {
   return {
     date,
-    person: { id: picked.personId, name: picked.personName },
-    quote: picked.quote,
+    person: {
+      id: toAuthorId(FALLBACK_PERSON),
+      name: FALLBACK_PERSON,
+    },
+    quote: FALLBACK_QUOTE_TEXT,
   };
 }
 
@@ -69,30 +74,19 @@ type FlatQuote = Readonly<{
   quote: string;
 }>;
 
-/**
- * Fetch quotes for all personalities and flatten into a stable list.
- *
- * Determinism note:
- * - We fetch at request time (server-only) and then select deterministically from the fetched set.
- * - If the upstream provider's dataset changes (or some authors fail), the picked quote may change
- *   for the same date. Without persistence, we cannot "lock" a quote permanently.
- *
- * Future improvement:
- * - Persist "quote of the day" per date (DB/KV) after first successful fetch.
- * - Add per-personality aliasing or multiple providers for better coverage.
- */
 async function fetchAndFlattenQuotes(): Promise<ReadonlyArray<FlatQuote>> {
-  // Stable order matters: keep deterministic iteration order so index mapping
-  // only changes if you intentionally change `PERSONALITIES`.
   const out: FlatQuote[] = [];
 
-  // Fetch sequentially to be gentle on the public API.
-  // (If you have many personalities, you can add concurrency with a small limit.)
   for (const name of PERSONALITIES) {
-    const quotes = await fetchQuotesByAuthor(name);
-    const personId = toAuthorId(name);
-    for (const quote of quotes) {
-      out.push({ personId, personName: name, quote });
+    try {
+      const quotes = await fetchQuotesByAuthor(name);
+      const personId = toAuthorId(name);
+
+      for (const quote of quotes) {
+        out.push({ personId, personName: name, quote });
+      }
+    } catch (err) {
+      console.warn(`[quotes] Failed for ${name}`, err);
     }
   }
 
@@ -106,24 +100,17 @@ function formatUtcDateYYYYMMDD(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * FNV-1a 32-bit hash (fast, stable, good enough for seeding a PRNG).
- * Returns an unsigned 32-bit integer.
- */
+/* ---------- deterministic RNG ---------- */
+
 function fnv1a32(input: string): number {
-  let hash = 0x811c9dc5; // offset basis
+  let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
     hash ^= input.charCodeAt(i);
-    // 32-bit FNV prime multiplication
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
 }
 
-/**
- * Mulberry32 PRNG: small, fast, deterministic given a seed.
- * Produces a float in [0, 1).
- */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -134,4 +121,3 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-

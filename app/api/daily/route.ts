@@ -1,3 +1,5 @@
+// app/api/daily/route.ts
+
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -8,25 +10,24 @@ import {
 } from "../../../lib/dailyStore";
 
 /**
- * Route Handler: GET /api/daily
+ * GET /api/daily
  *
- * - Runs on Node.js (required for KV + external fetches)
- * - Cron-safe
- * - Never crashes the UI
+ * - Node.js runtime (KV + external fetch)
+ * - Uses SAME logical day as UI
+ * - Safe for cron and manual hits
  */
 export async function GET() {
   try {
-    const today = formatUtcDateYYYYMMDD(new Date());
+    // 🔑 Same logical day as page.tsx
+    const today = getLogicalDate();
 
-    // 1. Try reading from KV
     let todays = await getPersistedDailyQuote(today);
 
-    // 2. If missing, generate + persist
     if (!todays) {
       todays = await ensurePersistedDailyQuote(getTodaysQuote);
     }
 
-    const maxAgeSeconds = secondsUntilNextUtcMidnight();
+    const maxAgeSeconds = secondsUntilNextLogicalRollover();
 
     return NextResponse.json(
       {
@@ -55,27 +56,34 @@ export async function GET() {
   }
 }
 
-/* ---------------- helpers ---------------- */
+/* ---------- helpers ---------- */
 
-function formatUtcDateYYYYMMDD(d: Date): string {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function getLogicalDate(now: Date = new Date()): string {
+  const SHIFT_MS = 14.5 * 60 * 60 * 1000;
+  const shifted = new Date(now.getTime() - SHIFT_MS);
+
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(shifted.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
-function secondsUntilNextUtcMidnight(now: Date = new Date()): number {
+function secondsUntilNextLogicalRollover(now: Date = new Date()): number {
+  const SHIFT_MS = 14.5 * 60 * 60 * 1000;
+  const shiftedNow = new Date(now.getTime() - SHIFT_MS);
+
   const next = new Date(
     Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() + 1,
+      shiftedNow.getUTCFullYear(),
+      shiftedNow.getUTCMonth(),
+      shiftedNow.getUTCDate() + 1,
       0,
       0,
       0,
     ),
   );
-  const diffMs = next.getTime() - now.getTime();
+
+  const diffMs = next.getTime() - shiftedNow.getTime();
   return clamp(Math.floor(diffMs / 1000), 60, 86400);
 }
 

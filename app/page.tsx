@@ -1,30 +1,34 @@
+// app/page.tsx
+
 export const dynamic = "force-dynamic";
 
 import { Background3D } from "../components/Background3D";
 import { QuoteCard } from "../components/QuoteCard";
+
 import { getThemeByAuthor } from "../lib/themes";
-import { getPersistedDailyQuote } from "../lib/dailyStore";
-import { isMood, type Mood } from "../lib/mood";
+import { getPersistedDailyQuote, ensurePersistedDailyQuote } from "../lib/dailyStore";
+import { getTodaysQuote } from "../lib/selectQuote";
 
 export default async function Home() {
+  // Always compute date in UTC
   const today = formatUtcDateYYYYMMDD(new Date());
-  const todays = await getPersistedDailyQuote(today);
 
+  // Try to read from KV first
+  let todays = await getPersistedDailyQuote(today);
+
+  // ✅ CRITICAL FIX:
+  // If missing (first deploy / cold start / new region),
+  // generate + persist automatically instead of crashing
   if (!todays) {
-    throw new Error(
-      "Daily quote has not been generated yet. Ensure the daily cron (GET /api/daily) is running.",
-    );
+    todays = await ensurePersistedDailyQuote(getTodaysQuote);
   }
 
-  // ✅ SAFE runtime + type-safe narrowing
-  const mood: Mood | undefined = isMood(todays.mood)
-    ? todays.mood
-    : undefined;
-
-  const theme = getThemeByAuthor(todays.person.id, mood);
+  // Mood is guaranteed to be valid here
+  const theme = getThemeByAuthor(todays.person.id, todays.mood);
 
   return (
     <div className="relative min-h-screen font-sans">
+      {/* Background (client component) */}
       <Background3D theme={theme} className="fixed inset-0 -z-10" />
 
       <main className="min-h-screen w-full px-6 py-12 flex items-center justify-center">
@@ -37,15 +41,24 @@ export default async function Home() {
         </div>
       </main>
 
+      {/* Local animation (server-safe) */}
       <style>{`
         @keyframes quoteFadeIn {
-          from { opacity: 0; transform: translate3d(0, 6px, 0); }
-          to { opacity: 1; transform: translate3d(0, 0, 0); }
+          from {
+            opacity: 0;
+            transform: translate3d(0, 6px, 0);
+          }
+          to {
+            opacity: 1;
+            transform: translate3d(0, 0, 0);
+          }
         }
+
         .quote-fade-in {
           opacity: 0;
           animation: quoteFadeIn 650ms ease-out both;
         }
+
         @media (prefers-reduced-motion: reduce) {
           .quote-fade-in {
             opacity: 1;

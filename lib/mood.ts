@@ -21,6 +21,27 @@ export type Mood =
   | "success"
   | "unknown";
 
+/**
+ * Runtime type guard for Mood.
+ * IMPORTANT:
+ * - KV / JSON deserialization turns everything into plain strings
+ * - This lets us safely narrow `string | unknown` → `Mood`
+ */
+export function isMood(value: unknown): value is Mood {
+  return (
+    value === "inspiring" ||
+    value === "motivational" ||
+    value === "reflective" ||
+    value === "resilient" ||
+    value === "success" ||
+    value === "unknown"
+  );
+}
+
+/**
+ * Infer mood from quote text.
+ * Deterministic + fast heuristic.
+ */
 export function inferMood(quote: string): Mood {
   const text = quote.toLowerCase();
 
@@ -46,4 +67,3 @@ export function inferMood(quote: string): Mood {
 
   return "unknown";
 }
-

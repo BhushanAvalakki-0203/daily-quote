@@ -1,3 +1,4 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { getTodaysQuote } from "../../../lib/selectQuote";
 import {
@@ -13,7 +14,6 @@ import {
  * - Safe for the Edge runtime (no Node-only APIs, no filesystem/network dependencies).
  * - Running on the Edge can reduce latency and makes caching at the CDN straightforward.
  */
-export const runtime = "edge";
 
 /**
  * Returns the deterministic quote of the day, including persisted metadata.

@@ -1,89 +1,53 @@
+// lib/fetchQuotes.ts
 import "server-only";
 
 /**
- * Fetch quotes by author name using a public quote API.
- *
- * Provider: Quotable (https://api.quotable.io)
- *
- * IMPORTANT:
- * - We explicitly disable Next.js fetch caching (`cache: "no-store"`)
- * - Determinism is handled at the quote-selection layer, not here
+ * External quote fetcher (best-effort).
+ * MUST NEVER crash the app.
  */
 
-type CacheEntry = Readonly<{
-  fetchedAtMs: number;
-  quotes: ReadonlyArray<string>;
-}>;
+const FALLBACK_QUOTES: Record<string, string[]> = {
+  "Steve Jobs": [
+    "Innovation distinguishes between a leader and a follower.",
+    "Stay hungry, stay foolish.",
+    "Your time is limited, so don’t waste it living someone else’s life.",
+  ],
+  "Cristiano Ronaldo": [
+    "Talent without working hard is nothing.",
+    "Your love makes me strong, your hate makes me unstoppable.",
+  ],
+  "Michael Phelps": [
+    "You can’t put a limit on anything.",
+    "If you want to be the best, you have to do things others aren’t willing to do.",
+  ],
+};
 
-// Best-effort in-memory cache (may reset on cold starts)
-const memCache: Map<string, CacheEntry> = new Map();
-
-export async function fetchQuotesByAuthor(authorName: string): Promise<string[]> {
-  const key = authorName.trim().toLowerCase();
-
-  // Keep results for 24 hours in memory
-  const ttlMs = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-
-  const cached = memCache.get(key);
-  if (cached && now - cached.fetchedAtMs < ttlMs) {
-    return [...cached.quotes];
-  }
-
+export async function fetchQuotesByAuthor(author: string): Promise<string[]> {
   try {
     const url = new URL("https://api.quotable.io/quotes");
-    url.searchParams.set("author", authorName);
+    url.searchParams.set("author", author);
     url.searchParams.set("limit", "50");
 
     const res = await fetch(url.toString(), {
-      // 🔥 CRITICAL FIX:
-      // Disable Next.js fetch cache completely
       cache: "no-store",
     });
 
     if (!res.ok) {
-      return [];
+      return FALLBACK_QUOTES[author] ?? [];
     }
 
-    const data: unknown = await res.json();
-    const quotes = parseQuotableQuotesResponse(data);
+    const data = (await res.json()) as {
+      results?: { content?: string }[];
+    };
 
-    memCache.set(key, {
-      fetchedAtMs: now,
-      quotes,
-    });
+    const quotes =
+      data.results
+        ?.map((r) => r.content)
+        .filter((q): q is string => typeof q === "string") ?? [];
 
-    return [...quotes];
-  } catch (err) {
-    console.error("[fetchQuotesByAuthor] failed", err);
-    return [];
+    return quotes.length > 0 ? quotes : FALLBACK_QUOTES[author] ?? [];
+  } catch {
+    // 🚨 NEVER throw
+    return FALLBACK_QUOTES[author] ?? [];
   }
-}
-
-function parseQuotableQuotesResponse(input: unknown): string[] {
-  if (!isRecord(input)) return [];
-
-  const results = input["results"];
-  if (!Array.isArray(results)) return [];
-
-  const out: string[] = [];
-
-  for (const item of results) {
-    if (!isRecord(item)) continue;
-    const content = item["content"];
-    if (typeof content === "string") {
-      const q = content.trim();
-      if (q.length > 0) out.push(q);
-    }
-  }
-
-  return dedupe(out);
-}
-
-function dedupe(list: string[]): string[] {
-  return [...new Set(list)];
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
